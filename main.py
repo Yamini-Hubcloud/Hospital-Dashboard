@@ -9,13 +9,27 @@ import os
 # ------------------------------
 app = FastAPI(title="Hospital Dashboard App")
 
-# Safe CSV path for Render/Docker
+# ------------------------------
+# File paths (Docker / Render safe)
+# ------------------------------
 BASE_DIR = os.path.dirname(__file__)
 CSV_PATH = os.path.join(BASE_DIR, "hospital_data.csv")
-df = pd.read_csv(CSV_PATH)
+
+# Global dataframe (loaded at startup)
+df = None
 
 # ------------------------------
-# Home endpoint
+# Load CSV safely AFTER app starts
+# ------------------------------
+@app.on_event("startup")
+def load_csv_data():
+    global df
+    if not os.path.exists(CSV_PATH):
+        raise RuntimeError(f"CSV file not found: {CSV_PATH}")
+    df = pd.read_csv(CSV_PATH)
+
+# ------------------------------
+# Health check / Home
 # ------------------------------
 @app.get("/")
 def home():
@@ -26,6 +40,10 @@ def home():
 # ------------------------------
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(page: int = 1, per_page: int = 50):
+
+    if df is None:
+        return HTMLResponse("<h3>Data not loaded</h3>", status_code=500)
+
     # Pagination
     start = (page - 1) * per_page
     end = start + per_page
@@ -36,7 +54,6 @@ def dashboard(page: int = 1, per_page: int = 50):
     conditions = df['Medical Condition'].dropna().unique().tolist() if 'Medical Condition' in df.columns else []
     years = df['Admission Year'].dropna().unique().tolist() if 'Admission Year' in df.columns else []
 
-    # HTML template
     html_content = f"""
     <!DOCTYPE html>
     <html>
@@ -57,9 +74,8 @@ def dashboard(page: int = 1, per_page: int = 50):
         <div class="container">
             <h2>Hospital Dashboard</h2>
 
-            <!-- Filters -->
             <div class="row filter-box">
-                <div class="col-md-3"><input id="searchInput" class="form-control" placeholder="Search all columns"></div>
+                <div class="col-md-3"><input id="searchInput" class="form-control" placeholder="Search"></div>
                 <div class="col-md-3">
                     <select id="insuranceFilter" class="form-select">
                         <option value="">All Insurance Providers</option>
@@ -80,7 +96,6 @@ def dashboard(page: int = 1, per_page: int = 50):
                 </div>
             </div>
 
-            <!-- Table -->
             <div class="table-responsive mb-3">
                 <table id="hospitalTable" class="table table-striped table-bordered">
                     <thead>
@@ -90,23 +105,17 @@ def dashboard(page: int = 1, per_page: int = 50):
                 </table>
             </div>
 
-            <!-- Pagination -->
-            <nav>
-              <ul class="pagination" id="pagination"></ul>
-            </nav>
+            <nav><ul class="pagination" id="pagination"></ul></nav>
 
-            <!-- Charts -->
             <div class="row mb-3">
-                <div class="col-md-4"><canvas id="conditionChart" height="100"></canvas></div>
-                <div class="col-md-4"><canvas id="insuranceChart" height="100"></canvas></div>
-                <div class="col-md-4"><canvas id="yearChart" height="100"></canvas></div>
+                <div class="col-md-4"><canvas id="conditionChart"></canvas></div>
+                <div class="col-md-4"><canvas id="insuranceChart"></canvas></div>
+                <div class="col-md-4"><canvas id="yearChart"></canvas></div>
             </div>
 
-            <!-- Download Button -->
             <button id="downloadBtn" class="btn btn-success">Download Filtered CSV</button>
         </div>
 
-        <!-- JS -->
         <script>
             const fullData = {json.dumps(df.to_dict(orient="records"))};
             let currentPage = {page};
@@ -123,94 +132,28 @@ def dashboard(page: int = 1, per_page: int = 50):
             }}
 
             function filterData() {{
-                const searchVal = $("#searchInput").val().toLowerCase();
-                const insuranceVal = $("#insuranceFilter").val();
-                const condVal = $("#conditionFilter").val();
-                const yearVal = $("#yearFilter").val();
+                const search = $("#searchInput").val().toLowerCase();
+                const insurance = $("#insuranceFilter").val();
+                const condition = $("#conditionFilter").val();
+                const year = $("#yearFilter").val();
 
-                let filtered = fullData.filter(row => {{
-                    const matchSearch = Object.values(row).some(v => String(v).toLowerCase().includes(searchVal));
-                    const matchInsurance = !insuranceVal || row["Insurance Provider"] === insuranceVal;
-                    const matchCond = !condVal || row["Medical Condition"] === condVal;
-                    const matchYear = !yearVal || row["Admission Year"] == yearVal;
-                    return matchSearch && matchInsurance && matchCond && matchYear;
-                }});
+                let filtered = fullData.filter(row =>
+                    Object.values(row).some(v => String(v).toLowerCase().includes(search)) &&
+                    (!insurance || row["Insurance Provider"] === insurance) &&
+                    (!condition || row["Medical Condition"] === condition) &&
+                    (!year || row["Admission Year"] == year)
+                );
 
-                const startIdx = (currentPage - 1) * perPage;
-                renderTable(filtered.slice(startIdx, startIdx + perPage));
-                renderCharts(filtered);
-                renderPagination(filtered.length);
+                renderTable(filtered.slice((currentPage-1)*perPage, currentPage*perPage));
             }}
 
-            function renderCharts(filteredData) {{
-                const condCounts = {{}}, insuranceCounts = {{}}, yearCounts = {{}};
-                filteredData.forEach(r => {{
-                    condCounts[r["Medical Condition"] || "Unknown"] = (condCounts[r["Medical Condition"]] || 0) + 1;
-                    insuranceCounts[r["Insurance Provider"] || "Unknown"] = (insuranceCounts[r["Insurance Provider"]] || 0) + 1;
-                    yearCounts[r["Admission Year"] || "Unknown"] = (yearCounts[r["Admission Year"]] || 0) + 1;
-                }});
+            $("#searchInput, #insuranceFilter, #conditionFilter, #yearFilter")
+                .on("input change", filterData);
 
-                function drawChart(canvasId, labels, values, labelText, color) {{
-                    if(window[canvasId]) window[canvasId].destroy();
-                    const ctx = document.getElementById(canvasId).getContext('2d');
-                    window[canvasId] = new Chart(ctx, {{
-                        type:'bar',
-                        data:{{labels, datasets:[{{label:labelText, data:values, backgroundColor:color}}]}},
-                        options:{{responsive:true, plugins:{{legend:{{display:false}}}}, scales:{{y:{{beginAtZero:true}}}}}}
-                    }});
-                }}
-
-                drawChart('conditionChart', Object.keys(condCounts), Object.values(condCounts), 'Patients by Condition', 'rgba(54,162,235,0.7)');
-                drawChart('insuranceChart', Object.keys(insuranceCounts), Object.values(insuranceCounts), 'Patients by Insurance', 'rgba(255,99,132,0.7)');
-                drawChart('yearChart', Object.keys(yearCounts), Object.values(yearCounts), 'Patients by Year', 'rgba(75,192,192,0.7)');
-            }}
-
-            function renderPagination(total) {{
-                const pages = Math.ceil(total/perPage);
-                const ul = $("#pagination");
-                ul.empty();
-                for(let i=1;i<=pages;i++) {{
-                    const activeClass = i===currentPage ? "active" : "";
-                    ul.append('<li class="page-item ' + activeClass + '"><a class="page-link" href="#">' + i + '</a></li>');
-                }}
-                $(".page-link").click(function(e){{
-                    e.preventDefault();
-                    currentPage = Number($(this).text());
-                    filterData();
-                }});
-            }}
-
-            $("#searchInput, #insuranceFilter, #conditionFilter, #yearFilter").on("input change", filterData);
-
-            $("#downloadBtn").click(function(){{
-                const filtered = fullData.filter(row => {{
-                    const searchVal = $("#searchInput").val().toLowerCase();
-                    const insuranceVal = $("#insuranceFilter").val();
-                    const condVal = !$("#conditionFilter").val() || row["Medical Condition"] === $("#conditionFilter").val();
-                    const insuranceVal2 = $("#insuranceFilter").val();
-                    const yearVal = $("#yearFilter").val();
-                    const matchSearch = Object.values(row).some(v => String(v).toLowerCase().includes(searchVal));
-                    const matchInsurance = !insuranceVal2 || row["Insurance Provider"] === insuranceVal2;
-                    const matchCond = !condVal || row["Medical Condition"] === condVal;
-                    const matchYear = !yearVal || row["Admission Year"] == yearVal;
-                    return matchSearch && matchInsurance && matchCond && matchYear;
-                }});
-                if(filtered.length === 0) return alert("No data to download");
-                const csvContent = "data:text/csv;charset=utf-8," + 
-                    [Object.keys(filtered[0]).join(","), ...filtered.map(r=>Object.values(r).join(","))].join("\\n");
-                const encodedUri = encodeURI(csvContent);
-                const link = document.createElement("a");
-                link.setAttribute("href", encodedUri);
-                link.setAttribute("download","hospital_filtered.csv");
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-            }});
-
-            // Initial render
             filterData();
         </script>
     </body>
     </html>
     """
-    return html_content
+
+    return HTMLResponse(html_content)
