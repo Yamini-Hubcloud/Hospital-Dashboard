@@ -1,17 +1,21 @@
-# Use official Python 3.11 slim image
+# Use official Python image
 FROM python:3.11-slim
 
-# Set working directory inside container
+# Set working directory
 WORKDIR /app
 
-# Copy all project files to container
-COPY . /app
+# Copy only requirements first for caching
+COPY requirements.txt .
 
 # Install dependencies
-RUN pip install --no-cache-dir fastapi==0.135.1 uvicorn==0.23.2 gunicorn==21.2.0 pandas==2.1.1
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
 
-# Expose port 10000 for Render
+# Copy the rest of the code
+COPY . .
+
+# Expose the port Render expects
 EXPOSE 10000
 
-# Start FastAPI app with Gunicorn
-CMD ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "main:app", "--bind", "0.0.0.0:10000"]
+# Command to run FastAPI with Gunicorn
+CMD ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "main:app", "--bind", "0.0.0.0:10000", "--workers", "1"]
