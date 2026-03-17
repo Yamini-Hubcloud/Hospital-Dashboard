@@ -1,4 +1,4 @@
-fastapi==0.110.0
-uvicorn==0.29.0
-pandas==2.2.2
-numpy==1.26.4
+fastapi==0.111.2
+uvicorn==0.23.2
+gunicorn==21.2.0
+pandas==2.1.1
