@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 import pandas as pd
 import json
@@ -10,39 +10,40 @@ import os
 app = FastAPI(title="Hospital Dashboard App")
 
 # ------------------------------
-# File paths (Docker / Render safe)
+# File paths (Render safe)
 # ------------------------------
-BASE_DIR = os.path.dirname(__file__)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CSV_PATH = os.path.join(BASE_DIR, "hospital_data.csv")
 
-# Global dataframe (loaded at startup)
-df = None
-
 # ------------------------------
-# Load CSV safely AFTER app starts
+# Load CSV safely (NO CRASH)
 # ------------------------------
-@app.on_event("startup")
-def load_csv_data():
-    global df
+try:
     if not os.path.exists(CSV_PATH):
-        raise RuntimeError(f"CSV file not found: {CSV_PATH}")
-    df = pd.read_csv(CSV_PATH)
+        print(f"CSV NOT FOUND at {CSV_PATH}")
+        df = pd.DataFrame()
+    else:
+        df = pd.read_csv(CSV_PATH)
+        print("CSV loaded successfully")
+except Exception as e:
+    print("ERROR LOADING CSV:", e)
+    df = pd.DataFrame()
 
 # ------------------------------
-# Health check / Home
+# Home Route
 # ------------------------------
 @app.get("/")
 def home():
     return {"message": "Hospital API is running"}
 
 # ------------------------------
-# Dashboard endpoint
+# Dashboard Route
 # ------------------------------
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(page: int = 1, per_page: int = 50):
 
-    if df is None:
-        return HTMLResponse("<h3>Data not loaded</h3>", status_code=500)
+    if df.empty:
+        return HTMLResponse("<h3>No data available</h3>", status_code=500)
 
     # Pagination
     start = (page - 1) * per_page
@@ -76,18 +77,21 @@ def dashboard(page: int = 1, per_page: int = 50):
 
             <div class="row filter-box">
                 <div class="col-md-3"><input id="searchInput" class="form-control" placeholder="Search"></div>
+
                 <div class="col-md-3">
                     <select id="insuranceFilter" class="form-select">
                         <option value="">All Insurance Providers</option>
                         {"".join([f'<option value="{ip}">{ip}</option>' for ip in insurance_providers])}
                     </select>
                 </div>
+
                 <div class="col-md-3">
                     <select id="conditionFilter" class="form-select">
                         <option value="">All Conditions</option>
                         {"".join([f'<option value="{c}">{c}</option>' for c in conditions])}
                     </select>
                 </div>
+
                 <div class="col-md-3">
                     <select id="yearFilter" class="form-select">
                         <option value="">All Years</option>
@@ -105,28 +109,20 @@ def dashboard(page: int = 1, per_page: int = 50):
                 </table>
             </div>
 
-            <nav><ul class="pagination" id="pagination"></ul></nav>
-
-            <div class="row mb-3">
-                <div class="col-md-4"><canvas id="conditionChart"></canvas></div>
-                <div class="col-md-4"><canvas id="insuranceChart"></canvas></div>
-                <div class="col-md-4"><canvas id="yearChart"></canvas></div>
-            </div>
-
-            <button id="downloadBtn" class="btn btn-success">Download Filtered CSV</button>
         </div>
 
         <script>
-            const fullData = {json.dumps(df.to_dict(orient="records"))};
-            let currentPage = {page};
-            const perPage = {per_page};
+            // ONLY send paginated data (prevents crash)
+            const fullData = {json.dumps(subset.to_dict(orient="records"))};
 
             function renderTable(data) {{
                 const tbody = $("#hospitalTable tbody");
                 tbody.empty();
                 data.forEach(row => {{
                     const tr = $("<tr></tr>");
-                    for (const key in row) tr.append("<td>" + row[key] + "</td>");
+                    for (const key in row) {{
+                        tr.append("<td>" + row[key] + "</td>");
+                    }}
                     tbody.append(tr);
                 }});
             }}
@@ -144,13 +140,13 @@ def dashboard(page: int = 1, per_page: int = 50):
                     (!year || row["Admission Year"] == year)
                 );
 
-                renderTable(filtered.slice((currentPage-1)*perPage, currentPage*perPage));
+                renderTable(filtered);
             }}
 
             $("#searchInput, #insuranceFilter, #conditionFilter, #yearFilter")
                 .on("input change", filterData);
 
-            filterData();
+            renderTable(fullData);
         </script>
     </body>
     </html>
